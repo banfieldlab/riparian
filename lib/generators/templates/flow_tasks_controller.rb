@@ -1,18 +1,18 @@
 class FlowTasksController < ApplicationController
   before_filter :load_flow_task, :only => [:show, :destroy, :run]
-  
+
   def index
     @flow_tasks = FlowTask.order("id desc").paginate(:page => params[:page])
   end
-  
+
   def show
   end
-  
+
   def new
     klass = params[:type].camlize.constantize rescue FlowTask
     @flow_task = klass.new
   end
-  
+
   def create
     class_name = params.keys.detect{|k| k =~ /flow_task/}
     klass = class_name.camelize.constantize rescue FlowTask
@@ -25,55 +25,45 @@ class FlowTasksController < ApplicationController
       render :new
     end
   end
-  
+
   def run
-    delayed_progress(request.path) do
-      @job = Delayed::Job.enqueue(@flow_task)
+    # Get the flow task id and type frmo params[:id], a composite of id and type
+    flow_task_id, flow_task_type = params[:id].split /-/
+    # Convert flow task type from string to Sidekiq job class
+    flow_task_job = "FlowTaskJob::#{flow_task_type.camelize}".constantize
+    # Set @job from params[:job]
+    @job = params[:job]
+    # If @job has content, check on the status of the flow task related to the job
+    if @job
+      @flow_task = FlowTask.find(flow_task_id.to_i)
+      # Check whether the Sidekiq flow task job is still alive
+      if Sidekiq::Status::failed? @job
+        @flow_task.update_attribute(:error_msg, "The flow task run into system error, please contact Admin.")
+      end
+      @status = @flow_task.status
+      @error_msg = @flow_task.error_msg if @status == "error"
+      @tries = params[:tries].to_i
+    # Else start the Sidekiq job for the flow task
+    else
+      @job = flow_task_job.perform_async(flow_task_id)
+      @status = "start"
+      @tries = 1
     end
   end
-  
+
   def destroy
     @flow_task.destroy
     flash[:notice] = "Flow task destroyed"
     redirect_to flow_tasks_path
   end
-  
+
   private
-  
+
   def load_flow_task
-    return true if @flow_task = FlowTask.find_by_id(params[:id])
+    return true if @flow_task = FlowTask.find(params[:id].to_i)
     flash[:error] = "That task doesn't exist"
     redirect_to flow_tasks_path
     false
   end
-  
-  # Encapsulates common pattern for actions that start a bg task get called 
-  # repeatedly to check progress
-  # Key is required, and a block that assigns a new Delayed::Job to @job
-  def delayed_progress(key)
-    @tries = params[:tries].to_i
-    if @tries > 20
-      @status = @error
-      @error_msg = "This is taking forever.  Please try again later."
-      return
-    end
-    @job_id = Rails.cache.read(key)
-    @job = Delayed::Job.find_by_id(@job_id)
-    if @job_id
-      if @job && @job.failed_at
-        @status = "error"
-        @error_msg = @job.last_error
-      elsif @job
-        @status = "working"
-      else
-        @status = "done"
-        Rails.cache.delete(key)
-      end
-    else
-      @status = "start"
-      yield
-      Rails.cache.write(key, @job.id)
-    end
-  end
-  
+
 end
