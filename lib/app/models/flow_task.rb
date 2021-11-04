@@ -35,12 +35,7 @@ class FlowTask < ActiveRecord::Base
     require 'open3'
     Rails.logger.info "[INFO #{Time.now}] #{self} running #{cmd}"
     update_attribute(:command, cmd)
-    stdin, stdout, stderr = Open3.popen3(cmd)
-    [stdin, stdout, stderr].map do |io|
-      s = io.read.strip rescue nil
-      io.close
-      s
-    end
+    stdin, stdout, stderr = Open3.capture3(cmd)
   end
 
 end
